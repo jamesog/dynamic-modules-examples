@@ -16,10 +16,12 @@ like Lua filters, Wasm filters, or External Processors.
 
 As of writing, the only official language supported by Envoy is Rust. However, the dynamic module's interface is defined in a plain
 C header file, so technically you can implement a dynamic module in any language that can build shared libraries, such as C, C++, Go, Zig, etc.
-Currently, this repository hosts two language implementations of dynamic modules: Rust and Go.
+Currently, this repository hosts three language implementations of dynamic modules: Rust, Go, and Zig.
 * [`rust`](rust): using the official Rust dynamic module SDK.
 * [`go`](go): using the experimental Go dynamic module SDK implemented here. WARNING: This is not an official SDK and is not
   supported by Envoy main respository. See [issue#25](https://github.com/envoyproxy/dynamic-modules-examples/issues/25) for more details.
+* [`zig`](zig): experimental Zig examples that directly interface with the C ABI. These examples demonstrate how to implement
+  dynamic modules in Zig without a dedicated SDK.
 
 This repository serves as a reference for developers who want to create their own dynamic modules for Envoy including
 how to setup the project, how to build it, and how to test it, etc.
@@ -49,6 +51,15 @@ go test ./... -v
 go build -buildmode=c-shared -o libgo_module.so .
 go tool golangci-lint run
 find . -type f -name '*.go' | xargs go tool gofumpt -l -w
+```
+
+### Zig Dynamic Module
+To build and test the modules locally without Envoy, you can use `zig` to build them:
+
+```
+cd zig
+zig build
+zig build test
 ```
 
 ### Build Envoy + Example Dynamic Module Docker Image
