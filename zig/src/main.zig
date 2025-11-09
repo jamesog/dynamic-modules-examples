@@ -5,6 +5,11 @@
 const std = @import("std");
 const envoy = @import("envoy-dynamic-modules");
 
+// Import filter implementations
+const passthrough = @import("http_passthrough.zig");
+const header_mutation = @import("http_header_mutation.zig");
+const random_auth = @import("http_random_auth.zig");
+
 // ============================================================================
 // Program Initialization
 // ============================================================================
@@ -22,8 +27,15 @@ fn programInit() bool {
 }
 
 // ============================================================================
-// HTTP Filter Configuration
+// Filter Configuration Routing
 // ============================================================================
+
+// Type-erased filter config to support multiple filter types
+const FilterConfigUnion = union(enum) {
+    passthrough: *passthrough.FilterConfig,
+    header_mutation: *header_mutation.FilterConfig,
+    random_auth: *random_auth.FilterConfig,
+};
 
 export fn envoy_dynamic_module_on_http_filter_config_new(
     envoy_filter_config_ptr: envoy.HttpFilterConfigEnvoyPtr,
@@ -32,56 +44,126 @@ export fn envoy_dynamic_module_on_http_filter_config_new(
     config_ptr: [*]const u8,
     config_size: usize,
 ) callconv(.C) envoy.HttpFilterConfigModulePtr {
+    _ = envoy_filter_config_ptr;
     const name = name_ptr[0..name_size];
     const config = config_ptr[0..config_size];
 
     envoy.logInfo("Creating filter config: {s}", .{name});
 
-    // For now, just implement passthrough
-    const filter_config = PassthroughFilterConfig.init(
-        envoy.EnvoyHttpFilterConfig.init(envoy_filter_config_ptr),
-        name,
-        config,
-    ) catch |err| {
-        envoy.logError("Failed to create filter config: {}", .{err});
+    const allocator = std.heap.c_allocator;
+
+    // Create wrapper to store filter type
+    const wrapper = allocator.create(FilterConfigUnion) catch {
+        envoy.logError("Failed to allocate config wrapper", .{});
         return @ptrCast(@alignCast(@as(?*anyopaque, null)));
     };
 
-    return @ptrCast(filter_config);
+    if (std.mem.eql(u8, name, "passthrough")) {
+        const filter_config = passthrough.FilterConfig.init(config) catch {
+            allocator.destroy(wrapper);
+            return @ptrCast(@alignCast(@as(?*anyopaque, null)));
+        };
+        wrapper.* = .{ .passthrough = filter_config };
+    } else if (std.mem.eql(u8, name, "header_mutation")) {
+        const filter_config = header_mutation.FilterConfig.init(config) catch {
+            allocator.destroy(wrapper);
+            return @ptrCast(@alignCast(@as(?*anyopaque, null)));
+        };
+        wrapper.* = .{ .header_mutation = filter_config };
+    } else if (std.mem.eql(u8, name, "random_auth")) {
+        const filter_config = random_auth.FilterConfig.init(config) catch {
+            allocator.destroy(wrapper);
+            return @ptrCast(@alignCast(@as(?*anyopaque, null)));
+        };
+        wrapper.* = .{ .random_auth = filter_config };
+    } else {
+        envoy.logError("Unknown filter name: {s}", .{name});
+        allocator.destroy(wrapper);
+        return @ptrCast(@alignCast(@as(?*anyopaque, null)));
+    }
+
+    return @ptrCast(wrapper);
 }
 
 export fn envoy_dynamic_module_on_http_filter_config_destroy(
     filter_config_ptr: envoy.HttpFilterConfigModulePtr,
 ) callconv(.C) void {
-    const config: *PassthroughFilterConfig = @ptrCast(@alignCast(filter_config_ptr));
-    config.deinit();
+    const wrapper: *FilterConfigUnion = @ptrCast(@alignCast(filter_config_ptr));
+    const allocator = std.heap.c_allocator;
+
+    switch (wrapper.*) {
+        .passthrough => |config| config.deinit(),
+        .header_mutation => |config| config.deinit(),
+        .random_auth => |config| config.deinit(),
+    }
+
+    allocator.destroy(wrapper);
 }
 
 // ============================================================================
-// HTTP Filter
+// Filter Instance Routing
 // ============================================================================
+
+const FilterUnion = union(enum) {
+    passthrough: *passthrough.Filter,
+    header_mutation: *header_mutation.Filter,
+    random_auth: *random_auth.Filter,
+};
 
 export fn envoy_dynamic_module_on_http_filter_new(
     filter_config_ptr: envoy.HttpFilterConfigModulePtr,
     envoy_filter_ptr: envoy.HttpFilterEnvoyPtr,
 ) callconv(.C) envoy.HttpFilterModulePtr {
-    const config: *PassthroughFilterConfig = @ptrCast(@alignCast(filter_config_ptr));
+    const config_wrapper: *FilterConfigUnion = @ptrCast(@alignCast(filter_config_ptr));
+    const allocator = std.heap.c_allocator;
 
-    const filter = config.createFilter(envoy_filter_ptr) catch |err| {
-        envoy.logError("Failed to create filter: {}", .{err});
+    const filter_wrapper = allocator.create(FilterUnion) catch {
+        envoy.logError("Failed to allocate filter wrapper", .{});
         return @ptrCast(@alignCast(@as(?*anyopaque, null)));
     };
 
-    return @ptrCast(filter);
+    switch (config_wrapper.*) {
+        .passthrough => |config| {
+            const filter = config.createFilter(envoy_filter_ptr) catch {
+                allocator.destroy(filter_wrapper);
+                return @ptrCast(@alignCast(@as(?*anyopaque, null)));
+            };
+            filter_wrapper.* = .{ .passthrough = filter };
+        },
+        .header_mutation => |config| {
+            const filter = config.createFilter(envoy_filter_ptr) catch {
+                allocator.destroy(filter_wrapper);
+                return @ptrCast(@alignCast(@as(?*anyopaque, null)));
+            };
+            filter_wrapper.* = .{ .header_mutation = filter };
+        },
+        .random_auth => |config| {
+            const filter = config.createFilter(envoy_filter_ptr) catch {
+                allocator.destroy(filter_wrapper);
+                return @ptrCast(@alignCast(@as(?*anyopaque, null)));
+            };
+            filter_wrapper.* = .{ .random_auth = filter };
+        },
+    }
+
+    return @ptrCast(filter_wrapper);
 }
+
+// ============================================================================
+// Filter Event Handlers
+// ============================================================================
 
 export fn envoy_dynamic_module_on_http_filter_request_headers(
     filter_ptr: envoy.HttpFilterModulePtr,
     envoy_filter_ptr: envoy.HttpFilterEnvoyPtr,
     end_of_stream: bool,
 ) callconv(.C) envoy.FilterHeadersStatus {
-    const filter: *PassthroughFilter = @ptrCast(@alignCast(filter_ptr));
-    return filter.onRequestHeaders(envoy_filter_ptr, end_of_stream);
+    const wrapper: *FilterUnion = @ptrCast(@alignCast(filter_ptr));
+    return switch (wrapper.*) {
+        .passthrough => |filter| filter.onRequestHeaders(envoy_filter_ptr, end_of_stream),
+        .header_mutation => |filter| filter.onRequestHeaders(envoy_filter_ptr, end_of_stream),
+        .random_auth => |filter| filter.onRequestHeaders(envoy_filter_ptr, end_of_stream),
+    };
 }
 
 export fn envoy_dynamic_module_on_http_filter_request_body(
@@ -89,16 +171,24 @@ export fn envoy_dynamic_module_on_http_filter_request_body(
     envoy_filter_ptr: envoy.HttpFilterEnvoyPtr,
     end_of_stream: bool,
 ) callconv(.C) envoy.FilterDataStatus {
-    const filter: *PassthroughFilter = @ptrCast(@alignCast(filter_ptr));
-    return filter.onRequestBody(envoy_filter_ptr, end_of_stream);
+    const wrapper: *FilterUnion = @ptrCast(@alignCast(filter_ptr));
+    return switch (wrapper.*) {
+        .passthrough => |filter| filter.onRequestBody(envoy_filter_ptr, end_of_stream),
+        .header_mutation => |filter| filter.onRequestBody(envoy_filter_ptr, end_of_stream),
+        .random_auth => |filter| filter.onRequestBody(envoy_filter_ptr, end_of_stream),
+    };
 }
 
 export fn envoy_dynamic_module_on_http_filter_request_trailers(
     filter_ptr: envoy.HttpFilterModulePtr,
     envoy_filter_ptr: envoy.HttpFilterEnvoyPtr,
 ) callconv(.C) envoy.FilterTrailersStatus {
-    const filter: *PassthroughFilter = @ptrCast(@alignCast(filter_ptr));
-    return filter.onRequestTrailers(envoy_filter_ptr);
+    const wrapper: *FilterUnion = @ptrCast(@alignCast(filter_ptr));
+    return switch (wrapper.*) {
+        .passthrough => |filter| filter.onRequestTrailers(envoy_filter_ptr),
+        .header_mutation => |filter| filter.onRequestTrailers(envoy_filter_ptr),
+        .random_auth => |filter| filter.onRequestTrailers(envoy_filter_ptr),
+    };
 }
 
 export fn envoy_dynamic_module_on_http_filter_response_headers(
@@ -106,8 +196,12 @@ export fn envoy_dynamic_module_on_http_filter_response_headers(
     envoy_filter_ptr: envoy.HttpFilterEnvoyPtr,
     end_of_stream: bool,
 ) callconv(.C) envoy.FilterHeadersStatus {
-    const filter: *PassthroughFilter = @ptrCast(@alignCast(filter_ptr));
-    return filter.onResponseHeaders(envoy_filter_ptr, end_of_stream);
+    const wrapper: *FilterUnion = @ptrCast(@alignCast(filter_ptr));
+    return switch (wrapper.*) {
+        .passthrough => |filter| filter.onResponseHeaders(envoy_filter_ptr, end_of_stream),
+        .header_mutation => |filter| filter.onResponseHeaders(envoy_filter_ptr, end_of_stream),
+        .random_auth => |filter| filter.onResponseHeaders(envoy_filter_ptr, end_of_stream),
+    };
 }
 
 export fn envoy_dynamic_module_on_http_filter_response_body(
@@ -115,140 +209,37 @@ export fn envoy_dynamic_module_on_http_filter_response_body(
     envoy_filter_ptr: envoy.HttpFilterEnvoyPtr,
     end_of_stream: bool,
 ) callconv(.C) envoy.FilterDataStatus {
-    const filter: *PassthroughFilter = @ptrCast(@alignCast(filter_ptr));
-    return filter.onResponseBody(envoy_filter_ptr, end_of_stream);
+    const wrapper: *FilterUnion = @ptrCast(@alignCast(filter_ptr));
+    return switch (wrapper.*) {
+        .passthrough => |filter| filter.onResponseBody(envoy_filter_ptr, end_of_stream),
+        .header_mutation => |filter| filter.onResponseBody(envoy_filter_ptr, end_of_stream),
+        .random_auth => |filter| filter.onResponseBody(envoy_filter_ptr, end_of_stream),
+    };
 }
 
 export fn envoy_dynamic_module_on_http_filter_response_trailers(
     filter_ptr: envoy.HttpFilterModulePtr,
     envoy_filter_ptr: envoy.HttpFilterEnvoyPtr,
 ) callconv(.C) envoy.FilterTrailersStatus {
-    const filter: *PassthroughFilter = @ptrCast(@alignCast(filter_ptr));
-    return filter.onResponseTrailers(envoy_filter_ptr);
+    const wrapper: *FilterUnion = @ptrCast(@alignCast(filter_ptr));
+    return switch (wrapper.*) {
+        .passthrough => |filter| filter.onResponseTrailers(envoy_filter_ptr),
+        .header_mutation => |filter| filter.onResponseTrailers(envoy_filter_ptr),
+        .random_auth => |filter| filter.onResponseTrailers(envoy_filter_ptr),
+    };
 }
 
 export fn envoy_dynamic_module_on_http_filter_destroy(
     filter_ptr: envoy.HttpFilterModulePtr,
 ) callconv(.C) void {
-    const filter: *PassthroughFilter = @ptrCast(@alignCast(filter_ptr));
-    filter.deinit();
+    const wrapper: *FilterUnion = @ptrCast(@alignCast(filter_ptr));
+    const allocator = std.heap.c_allocator;
+
+    switch (wrapper.*) {
+        .passthrough => |filter| filter.deinit(),
+        .header_mutation => |filter| filter.deinit(),
+        .random_auth => |filter| filter.deinit(),
+    }
+
+    allocator.destroy(wrapper);
 }
-
-// ============================================================================
-// Passthrough Filter Implementation
-// ============================================================================
-
-const PassthroughFilterConfig = struct {
-    allocator: std.mem.Allocator,
-    envoy_config: envoy.EnvoyHttpFilterConfig,
-    config_data: []const u8,
-
-    pub fn init(
-        envoy_config: envoy.EnvoyHttpFilterConfig,
-        name: []const u8,
-        config: []const u8,
-    ) !*PassthroughFilterConfig {
-        _ = name;
-        const allocator = std.heap.c_allocator;
-        const self = try allocator.create(PassthroughFilterConfig);
-        errdefer allocator.destroy(self);
-
-        self.* = .{
-            .allocator = allocator,
-            .envoy_config = envoy_config,
-            .config_data = try allocator.dupe(u8, config),
-        };
-
-        return self;
-    }
-
-    pub fn deinit(self: *PassthroughFilterConfig) void {
-        self.allocator.free(self.config_data);
-        self.allocator.destroy(self);
-    }
-
-    pub fn createFilter(self: *PassthroughFilterConfig, envoy_filter: envoy.HttpFilterEnvoyPtr) !*PassthroughFilter {
-        const filter = try self.allocator.create(PassthroughFilter);
-        errdefer self.allocator.destroy(filter);
-
-        filter.* = .{
-            .allocator = self.allocator,
-            .config = self,
-            .envoy_filter = envoy_filter,
-        };
-
-        return filter;
-    }
-};
-
-const PassthroughFilter = struct {
-    allocator: std.mem.Allocator,
-    config: *PassthroughFilterConfig,
-    envoy_filter: envoy.HttpFilterEnvoyPtr,
-
-    pub fn onRequestHeaders(
-        self: *PassthroughFilter,
-        envoy_filter: envoy.HttpFilterEnvoyPtr,
-        end_of_stream: bool,
-    ) envoy.FilterHeadersStatus {
-        _ = self;
-        _ = envoy_filter;
-        _ = end_of_stream;
-        return envoy.c.envoy_dynamic_module_type_on_http_filter_request_headers_status_Continue;
-    }
-
-    pub fn onRequestBody(
-        self: *PassthroughFilter,
-        envoy_filter: envoy.HttpFilterEnvoyPtr,
-        end_of_stream: bool,
-    ) envoy.FilterDataStatus {
-        _ = self;
-        _ = envoy_filter;
-        _ = end_of_stream;
-        return envoy.c.envoy_dynamic_module_type_on_http_filter_request_body_status_Continue;
-    }
-
-    pub fn onRequestTrailers(
-        self: *PassthroughFilter,
-        envoy_filter: envoy.HttpFilterEnvoyPtr,
-    ) envoy.FilterTrailersStatus {
-        _ = self;
-        _ = envoy_filter;
-        return envoy.c.envoy_dynamic_module_type_on_http_filter_request_trailers_status_Continue;
-    }
-
-    pub fn onResponseHeaders(
-        self: *PassthroughFilter,
-        envoy_filter: envoy.HttpFilterEnvoyPtr,
-        end_of_stream: bool,
-    ) envoy.FilterHeadersStatus {
-        _ = self;
-        _ = envoy_filter;
-        _ = end_of_stream;
-        return envoy.c.envoy_dynamic_module_type_on_http_filter_response_headers_status_Continue;
-    }
-
-    pub fn onResponseBody(
-        self: *PassthroughFilter,
-        envoy_filter: envoy.HttpFilterEnvoyPtr,
-        end_of_stream: bool,
-    ) envoy.FilterDataStatus {
-        _ = self;
-        _ = envoy_filter;
-        _ = end_of_stream;
-        return envoy.c.envoy_dynamic_module_type_on_http_filter_response_body_status_Continue;
-    }
-
-    pub fn onResponseTrailers(
-        self: *PassthroughFilter,
-        envoy_filter: envoy.HttpFilterEnvoyPtr,
-    ) envoy.FilterTrailersStatus {
-        _ = self;
-        _ = envoy_filter;
-        return envoy.c.envoy_dynamic_module_type_on_http_filter_response_trailers_status_Continue;
-    }
-
-    pub fn deinit(self: *PassthroughFilter) void {
-        self.allocator.destroy(self);
-    }
-};

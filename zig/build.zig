@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     });
 
     main_tests.linkLibC();
-    main_tests.root_module.addImport("envoy-dynamic-modules", sdk_module);
+    main_tests.root_module.addImport("envoy-dynamic-modules", sdk);
 
     const run_main_tests = b.addRunArtifact(main_tests);
     const test_step = b.step("test", "Run library tests");

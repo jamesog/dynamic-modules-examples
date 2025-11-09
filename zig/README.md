@@ -66,7 +66,19 @@ zig build test
 
 ## Current Examples
 
-- **Passthrough Filter**: Demonstrates basic SDK usage with a minimal filter that passes all requests through
+- **http_passthrough**: Minimal passthrough filter demonstrating basic SDK usage
+- **http_header_mutation**: Mutates request/response headers based on JSON config (Note: Partially implemented - SDK needs header manipulation functions)
+- **http_random_auth**: Randomly rejects requests with 403 status (Note: Partially implemented - SDK needs sendLocalReply function)
+
+**What's Different from Rust Examples?**
+
+The Zig SDK (vendored from the Envoy repo) is still evolving. Some features available in Rust are not yet exposed in the Zig SDK:
+- Header manipulation functions (set/remove headers)
+- Attribute access (source address, response code, etc.)
+- Send local reply functionality
+- Metrics API
+
+These examples show the pattern for implementing filters and note where SDK enhancements are needed. Filters can still be implemented by calling C functions directly via `envoy.c.*`.
 
 ## Adding New Filters
 
