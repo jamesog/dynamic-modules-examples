@@ -1,25 +1,26 @@
 # Zig Dynamic Module Examples
 
-This directory contains examples of Envoy dynamic modules implemented in Zig.
+This directory contains examples of Envoy dynamic modules implemented using the Zig SDK.
 
 ## Overview
 
-Zig is a great language for implementing Envoy dynamic modules because:
-- It can easily interface with C ABIs without FFI overhead
-- It provides memory safety features
-- It has excellent cross-compilation support
-- The build system is simple and powerful
+These examples use the Zig SDK from the Envoy repository to implement HTTP filters. The SDK is vendored in the `sdk/` directory (similar to the Go SDK approach) to make the examples self-contained.
 
-## Implementation
+## Architecture
 
-These examples implement the Envoy dynamic module ABI directly using Zig's C interop features. The implementation includes:
+**Proper SDK Pattern:**
+- **sdk/**: Vendored Zig SDK from `envoyproxy/envoy/source/extensions/dynamic_modules/sdk/zig/`
+  - Provides type-safe wrappers around the C ABI
+  - Handles @cImport of abi.h and abi_version.h
+  - Offers Zig-idiomatic logging and buffer helpers
+- **src/**: Example filter implementations
+  - Import the SDK as `@import("envoy-dynamic-modules")`
+  - Implement only filter-specific logic
+  - No duplication of ABI bindings
 
-- **abi.zig**: Defines the C ABI bindings for Envoy callbacks and data structures
-- **http_passthrough.zig**: A simple passthrough filter that does nothing
-- **http_header_mutation.zig**: Mutates request and response headers based on configuration
-- **http_random_auth.zig**: Randomly rejects requests with 403 status
-- **http_access_logger.zig**: Logs request and response information (simplified)
-- **http_metrics.zig**: Records per-route latency metrics (simplified)
+This follows the pattern established by:
+- **Rust**: References SDK from Envoy repo via Cargo dependency
+- **Go**: Vendors SDK in `gosdk/` directory for self-contained examples
 
 ## Building
 
@@ -30,7 +31,7 @@ cd zig
 zig build
 ```
 
-The shared library will be created in `zig-out/lib/libzig_module.so` (or `.dylib` on macOS, `.dll` on Windows).
+The shared library will be created in `zig-out/lib/libzig_module.so`.
 
 ## Testing
 
@@ -43,19 +44,33 @@ zig build test
 
 ## Requirements
 
-- Zig 0.12.0 or later
+- Zig 0.14.0 or later
 
-## Notes
+## Current Examples
 
-These examples demonstrate the core concepts of implementing Envoy dynamic modules in Zig. Some features are simplified compared to the Rust examples:
+- **Passthrough Filter**: Demonstrates basic SDK usage with a minimal filter that passes all requests through
 
-- The access logger doesn't use worker threads for file I/O
-- The metrics filter prints to stdout rather than using Envoy's metrics API (which would require additional ABI bindings)
-- No regex WAF example is included yet (would require a regex library)
+## Adding New Filters
 
-## Configuration
+To add a new filter:
 
-Each filter accepts configuration in JSON format, matching the Rust examples. See the Rust README and integration tests for configuration examples.
+1. Import the SDK: `const envoy = @import("envoy-dynamic-modules");`
+2. Implement FilterConfig and Filter structs
+3. Export the required C ABI functions
+4. Use SDK helpers like `envoy.logInfo()`, `envoy.c.kAbiVersion`, etc.
+
+See `src/main.zig` for a complete example.
+
+## SDK Synchronization
+
+The SDK in `sdk/` is copied from the Envoy repository. To update it:
+
+```bash
+# From a clone of envoyproxy/envoy
+cp source/extensions/dynamic_modules/sdk/zig/lib.zig zig/sdk/
+cp source/extensions/dynamic_modules/abi.h zig/sdk/
+cp source/extensions/dynamic_modules/abi_version.h zig/sdk/
+```
 
 ## Integration with Envoy
 
