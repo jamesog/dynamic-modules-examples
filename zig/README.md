@@ -8,7 +8,7 @@ These examples use the Zig SDK from the Envoy repository to implement HTTP filte
 
 ## Architecture
 
-**Proper SDK Pattern:**
+**SDK Pattern:**
 - **sdk/**: Vendored Zig SDK from `envoyproxy/envoy/source/extensions/dynamic_modules/sdk/zig/`
   - Provides type-safe wrappers around the C ABI
   - Handles @cImport of abi.h and abi_version.h
@@ -18,9 +18,27 @@ These examples use the Zig SDK from the Envoy repository to implement HTTP filte
   - Implement only filter-specific logic
   - No duplication of ABI bindings
 
-This follows the pattern established by:
-- **Rust**: References SDK from Envoy repo via Cargo dependency
-- **Go**: Vendors SDK in `gosdk/` directory for self-contained examples
+**Why vendor instead of using build.zig.zon?**
+
+The SDK is vendored (copied) here because:
+1. The Envoy repo is too large (~12k files, 100s of MB) to fetch as a dependency
+2. Zig's package manager can't fetch from subdirectories of git repos
+3. Examples should be self-contained and easy to build (`git clone && zig build`)
+
+**Future: Dedicated SDK repo**
+
+The proper long-term solution is creating `envoyproxy/envoy-dynamic-modules-zig-sdk` (like Rust has), then using:
+```zig
+// In build.zig.zon
+.dependencies = .{
+    .@"envoy-dynamic-modules" = .{
+        .url = "https://github.com/envoyproxy/envoy-dynamic-modules-zig-sdk/archive/vX.Y.Z.tar.gz",
+        .hash = "...",
+    },
+}
+```
+
+Until then, vendoring follows Go's approach and is the cleanest option.
 
 ## Building
 
